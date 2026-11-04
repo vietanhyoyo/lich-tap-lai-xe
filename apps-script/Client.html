@@ -1,0 +1,171 @@
+<script>
+(() => {
+  'use strict';
+  const $ = selector => document.querySelector(selector);
+  const page = document.body.dataset.page;
+  let records = [];
+  let editingId = null;
+  let adminToken = '';
+  let busyCount = 0;
+  const formatDate = value => value ? new Date(value + 'T00:00:00').toLocaleDateString('vi-VN') : '—';
+  const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  function call(name, ...args) {
+    return new Promise((resolve, reject) => {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(error => reject(new Error(error && error.message ? error.message : 'Không thể kết nối Google Sheets.')))[name](...args);
+    });
+  }
+  async function withBusy(task, text) {
+    busyCount++;
+    $('#loading-overlay').hidden = false;
+    $('#loading-overlay strong').textContent = text || 'Đang xử lý...';
+    try { return await task(); }
+    finally { busyCount--; if (!busyCount) $('#loading-overlay').hidden = true; }
+  }
+  function message(text, error) {
+    const box = $('#form-message');
+    box.textContent = text || '';
+    box.classList.toggle('error', !!error);
+    box.classList.toggle('success', !error && !!text);
+  }
+  function fromForm(form) {
+    const data = new FormData(form);
+    const item = Object.fromEntries(['registrationDate','teacher','licenseClass','car','student'].map(key => [key, String(data.get(key) || '').trim()]));
+    item.timeSlots = data.getAll('timeSlots');
+    if (!item.timeSlots.length) throw new Error('Vui lòng chọn ít nhất một khung giờ.');
+    return item;
+  }
+  function fillForm(form, item) {
+    form.reset();
+    for (const key of ['registrationDate','teacher','licenseClass','car','student']) form.elements[key].value = item?.[key] || (key === 'registrationDate' ? today() : '');
+    form.querySelectorAll('[name="timeSlots"]').forEach(el => { el.checked = !!item?.timeSlots.includes(el.value); });
+    message('');
+  }
+  function showLogin(errorText) {
+    adminToken = '';
+    records = [];
+    renderAdmin();
+    $('#admin-login').hidden = false;
+    $('#login-error').textContent = errorText || '';
+  }
+  async function loadRecords() {
+    records = await call('listRecords', adminToken);
+    renderAdmin();
+  }
+  function renderAdmin() {
+    const search = $('#filter-name').value.trim().toLocaleLowerCase('vi-VN');
+    const license = $('#filter-class').value;
+    const date = $('#filter-date').value;
+    const filtered = records.filter(item => (!search || (item.teacher + ' ' + item.student).toLocaleLowerCase('vi-VN').includes(search)) && (!license || item.licenseClass === license) && (!date || item.registrationDate === date));
+    filtered.sort((a,b) => b.registrationDate.localeCompare(a.registrationDate) || b.createdAt.localeCompare(a.createdAt));
+    $('#stat-total').textContent = records.length;
+    $('#stat-days').textContent = new Set(records.map(item => item.registrationDate)).size;
+    $('#stat-date').textContent = date ? records.filter(item => item.registrationDate === date).length : '—';
+    $('#stat-date-label').textContent = date ? formatDate(date) : 'Chọn ngày để xem';
+    $('#result-count').textContent = filtered.length + ' trong ' + records.length + ' lượt đăng ký';
+    $('#records-body').innerHTML = filtered.map(item => `<tr><td><strong>${formatDate(item.registrationDate)}</strong></td><td>${escapeHtml(item.teacher)}</td><td>${escapeHtml(item.student)}</td><td><span class="badge">${escapeHtml(item.licenseClass)}</span></td><td>${escapeHtml(item.car)}</td><td>${item.timeSlots.map(slot => `<span class="slot">${escapeHtml(slot)}</span>`).join('')}</td><td><div class="row-actions"><button class="action-edit" data-edit="${item.id}">Sửa</button><button class="action-delete" data-delete="${item.id}">Xóa</button></div></td></tr>`).join('');
+    $('#empty-state').hidden = filtered.length > 0;
+    const grouped = new Map();
+    records.forEach(item => grouped.set(item.registrationDate, (grouped.get(item.registrationDate) || 0) + 1));
+    const daily = [...grouped].sort((a,b) => b[0].localeCompare(a[0]));
+    const max = Math.max(1, ...daily.map(pair => pair[1]));
+    $('#daily-stats').innerHTML = daily.length ? daily.map(([day,count]) => `<div class="daily-row"><span>${formatDate(day)}</span><div class="bar-track"><div style="width:${count/max*100}%"></div></div><strong>${count}</strong></div>`).join('') : '<p class="muted">Chưa có dữ liệu thống kê.</p>';
+  }
+  async function init() {
+    const form = $('#record-form');
+    fillForm(form, null);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      let item;
+      try { item = fromForm(form); } catch (error) { message(error.message, true); return; }
+      const button = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      if (page === 'admin') $('#record-dialog').close();
+      try {
+        await withBusy(async () => {
+          if (page === 'admin') {
+            if (editingId) await call('updateRecord', adminToken, editingId, item);
+            else await call('createRecord', item);
+            await loadRecords();
+          } else {
+            await call('createRecord', item);
+            fillForm(form, null);
+            message('Đăng ký thành công! Lịch đã được lưu vào Google Sheets.');
+            window.scrollTo({top:0, behavior:'smooth'});
+          }
+        }, 'Đang lưu vào Google Sheets...');
+      } catch (error) {
+        message(error.message, true);
+        if (page === 'admin') {
+          if (/Phiên quản trị/.test(error.message)) showLogin(error.message);
+          else $('#record-dialog').showModal();
+        }
+      }
+      finally { button.disabled = false; }
+    });
+    if (page !== 'admin') return;
+    $('#login-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      $('#login-error').textContent = '';
+      const button = event.submitter;
+      button.disabled = true;
+      try {
+        await withBusy(async () => {
+          adminToken = await call('loginAdmin', $('#admin-password').value);
+          await loadRecords();
+          $('#admin-password').value = '';
+          $('#admin-login').hidden = true;
+        }, 'Đang đăng nhập...');
+      } catch (error) { showLogin(error.message); }
+      finally { button.disabled = false; }
+    });
+    if (adminToken) {
+      try { await withBusy(loadRecords, 'Đang tải lịch tập...'); $('#admin-login').hidden = true; }
+      catch (error) { showLogin(error.message); }
+    }
+    for (const selector of ['#filter-name','#filter-class','#filter-date']) $(selector).addEventListener('input', renderAdmin);
+    $('#clear-filters').addEventListener('click', () => { $('#filter-name').value = ''; $('#filter-class').value = ''; $('#filter-date').value = ''; renderAdmin(); });
+    const dialog = $('#record-dialog');
+    $('#add-record').addEventListener('click', () => { editingId = null; $('#dialog-title').textContent = 'Thêm lịch tập'; fillForm(form, null); dialog.showModal(); });
+    $('#close-dialog').addEventListener('click', () => dialog.close());
+    $('#cancel-dialog').addEventListener('click', () => dialog.close());
+    $('#records-body').addEventListener('click', async event => {
+      const edit = event.target.closest('[data-edit]');
+      const del = event.target.closest('[data-delete]');
+      if (edit) {
+        const item = records.find(record => record.id === edit.dataset.edit);
+        if (!item) return;
+        editingId = item.id;
+        $('#dialog-title').textContent = 'Sửa lịch tập';
+        fillForm(form, item);
+        dialog.showModal();
+      }
+      if (del) {
+        const item = records.find(record => record.id === del.dataset.delete);
+        if (!item || !window.confirm('Xóa lịch của ' + item.student + ' ngày ' + formatDate(item.registrationDate) + '?')) return;
+        try { await withBusy(async () => { await call('deleteRecord', adminToken, item.id); await loadRecords(); }, 'Đang xóa lịch...'); }
+        catch (error) { window.alert(error.message); if (/Phiên quản trị/.test(error.message)) showLogin(error.message); }
+      }
+    });
+    $('#export-excel').addEventListener('click', async () => {
+      try {
+        await withBusy(async () => {
+          const result = await call('exportWorkbook', adminToken);
+          const raw = atob(result.base64);
+          const bytes = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+          const url = URL.createObjectURL(new Blob([bytes], {type: result.mimeType}));
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = result.name;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }, 'Đang xuất Excel...');
+      } catch (error) { window.alert(error.message); if (/Phiên quản trị/.test(error.message)) showLogin(error.message); }
+    });
+  }
+  init();
+})();
+</script>
