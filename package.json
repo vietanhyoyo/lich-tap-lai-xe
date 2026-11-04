@@ -2,7 +2,15 @@
   "name": "lich-tap-lai-xe",
   "version": "1.0.0",
   "private": true,
-  "description": "Đăng ký và quản lý lịch tập lái xe, lưu trên Excel local",
-  "scripts": { "start": "node redirect.js", "legacy:excel": "node server.js" },
-  "dependencies": { "exceljs": "^4.4.0" }
+  "description": "Đăng ký lịch tập lái xe, lưu vào Google Sheets",
+  "scripts": {
+    "start": "node scripts/dev-netlify.mjs",
+    "legacy:excel": "node server.js",
+    "build": "node scripts/sync-public.mjs",
+    "start:google": "node redirect.js",
+    "dev:netlify": "node scripts/dev-netlify.mjs"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  }
 }

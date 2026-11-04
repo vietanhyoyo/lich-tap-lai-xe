@@ -185,7 +185,7 @@ async function serveStatic(res, pathname) {
   const file = files[pathname];
   if (!file) throw bad('Không tìm thấy trang.', 404);
   const types = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css'};
-  const content = await fs.readFile(path.join(ROOT, 'public', file));
+  const content = await fs.readFile(path.join(ROOT, 'legacy-public', file));
   res.writeHead(200, {'Content-Type': `${types[path.extname(file)]}; charset=utf-8`, 'Cache-Control': 'no-store'});
   res.end(content);
 }
