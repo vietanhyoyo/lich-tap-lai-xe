@@ -8,6 +8,8 @@ const SLOT_SHEET_NAME = 'Khung giờ tập';
 const DEFAULT_CARS = ['Xe 1', 'Xe 2', 'Xe 3', 'Xe 4', 'Xe 5'];
 const DEFAULT_TIME_SLOTS = ['6h - 7h', '7h - 8h'];
 const ADMIN_PASSWORD = '12345678';
+const ADMIN_SESSION_PREFIX = 'adminSession:';
+const ADMIN_SESSION_TTL_MS = 8 * 24 * 60 * 60 * 1000;
 const HEADERS = ['Mã', 'Ngày đăng ký', 'Tên thầy', 'Hạng xe', 'Xe', 'Khung giờ tập lái', 'Tên học viên', 'Thời điểm tạo', 'Thời điểm sửa'];
 const KEYS = ['id', 'registrationDate', 'teacher', 'licenseClass', 'car', 'timeSlots', 'student', 'createdAt', 'updatedAt'];
 
@@ -24,15 +26,25 @@ function include_(name) { return HtmlService.createHtmlOutputFromFile(name).getC
 function loginAdmin(password) {
   if (String(password || '') !== ADMIN_PASSWORD) throw new Error('Mật khẩu không đúng.');
   const token = Utilities.getUuid() + Utilities.getUuid();
-  CacheService.getScriptCache().put('admin:' + token, '1', 21600);
-  return token;
+  const expiresAt = Date.now() + ADMIN_SESSION_TTL_MS;
+  const properties = PropertiesService.getScriptProperties();
+  const stored = properties.getProperties();
+  const now = Date.now();
+  Object.keys(stored).forEach(key => {
+    if (key.indexOf(ADMIN_SESSION_PREFIX) === 0 && Number(stored[key]) <= now) properties.deleteProperty(key);
+  });
+  properties.setProperty(ADMIN_SESSION_PREFIX + token, String(expiresAt));
+  return {token: token, expiresAt: expiresAt};
 }
 function logoutAdmin(token) {
-  if (token) CacheService.getScriptCache().remove('admin:' + String(token));
+  if (token) PropertiesService.getScriptProperties().deleteProperty(ADMIN_SESSION_PREFIX + String(token));
   return true;
 }
 function requireAdmin_(token) {
-  if (!token || CacheService.getScriptCache().get('admin:' + String(token)) !== '1') {
+  const key = token ? ADMIN_SESSION_PREFIX + String(token) : '';
+  const expiresAt = key ? Number(PropertiesService.getScriptProperties().getProperty(key)) : 0;
+  if (!expiresAt || expiresAt <= Date.now()) {
+    if (key) PropertiesService.getScriptProperties().deleteProperty(key);
     throw new Error('Phiên quản trị đã hết hạn. Vui lòng đăng nhập lại.');
   }
 }

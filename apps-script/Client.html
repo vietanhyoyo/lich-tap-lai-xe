@@ -3,11 +3,12 @@
   'use strict';
   const $ = selector => document.querySelector(selector);
   const page = document.body.dataset.page;
+  const adminSessionKey = 'lich-tap-lai-xe.admin-session';
   let records = [];
   let teachers = [];
   let editingTeacherId = null;
   let editingId = null;
-  let adminToken = '';
+  let adminToken = readAdminToken();
   let busyCount = 0;
   let availability = {};
   let visibleMonth = '';
@@ -15,6 +16,29 @@
   let cars = [];
   let slots = [];
   const licenseClasses = ['B.01', 'B', 'C1'];
+  function readAdminToken() {
+    if (page !== 'admin') return '';
+    try {
+      const session = JSON.parse(localStorage.getItem(adminSessionKey) || 'null');
+      if (!session || typeof session.token !== 'string' || !session.token || !Number.isFinite(Number(session.expiresAt)) || Number(session.expiresAt) <= Date.now()) {
+        localStorage.removeItem(adminSessionKey);
+        return '';
+      }
+      return session.token;
+    } catch {
+      try { localStorage.removeItem(adminSessionKey); } catch {}
+      return '';
+    }
+  }
+  function saveAdminSession(session) {
+    adminToken = session.token;
+    try { localStorage.setItem(adminSessionKey, JSON.stringify({token: session.token, expiresAt: Number(session.expiresAt)})); }
+    catch { /* Keep this login active even if browser storage is unavailable. */ }
+  }
+  function clearAdminSession() {
+    adminToken = '';
+    try { localStorage.removeItem(adminSessionKey); } catch {}
+  }
   const formatDate = value => value ? new Date(value + 'T00:00:00').toLocaleDateString('vi-VN') : '—';
   const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
   visibleMonth = today().slice(0, 7);
@@ -217,7 +241,7 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden) loadAvailability(); });
   }
   function showLogin(errorText) {
-    adminToken = '';
+    clearAdminSession();
     records = [];
     renderAdmin();
     $('#admin-login').hidden = false;
@@ -228,7 +252,7 @@
     renderAdmin();
   }
   async function loadAdminDashboard() {
-    await withBusy(async () => {
+    return withBusy(async () => {
       const results = await Promise.allSettled([loadBookingOptions(), loadTeachers(), loadRecords()]);
       const [optionsResult, teachersResult, recordsResult] = results;
       if (optionsResult.status === 'rejected') {
@@ -256,7 +280,11 @@
       }
 
       const expired = results.find(result => result.status === 'rejected' && /Phiên quản trị/.test(result.reason.message));
-      if (expired) showLogin(expired.reason.message);
+      if (expired) {
+        showLogin(expired.reason.message);
+        return false;
+      }
+      return true;
     }, 'Đang tải dữ liệu quản trị...');
   }
   function renderAdmin() {
@@ -326,16 +354,22 @@
       button.disabled = true;
       try {
         await withBusy(async () => {
-          adminToken = await call('loginAdmin', $('#admin-password').value);
+          const session = await call('loginAdmin', $('#admin-password').value);
+          if (!session || typeof session.token !== 'string' || !Number.isFinite(Number(session.expiresAt))) throw new Error('Máy chủ trả về phiên đăng nhập không hợp lệ.');
+          saveAdminSession(session);
           $('#admin-password').value = '';
           $('#admin-login').hidden = true;
         }, 'Đang đăng nhập...');
-        await loadAdminDashboard();
+        const loaded = await loadAdminDashboard();
+        if (loaded && adminToken) $('#admin-login').hidden = true;
       } catch (error) { showLogin(error.message); }
       finally { button.disabled = false; }
     });
     if (adminToken) {
-      try { await loadAdminDashboard(); $('#admin-login').hidden = true; }
+      try {
+        const loaded = await loadAdminDashboard();
+        if (loaded && adminToken) $('#admin-login').hidden = true;
+      }
       catch (error) { showLogin(error.message); }
     }
     for (const selector of ['#filter-name','#filter-class','#filter-date']) $(selector).addEventListener('input', renderAdmin);
