@@ -3,6 +3,10 @@ const SPREADSHEET_ID = '1SeeNpu1kZIt8nAqD_7lfzi_4z14t0Pm_96_tsfbsf2Q';
 const SHEET_NAME = 'Lịch tập lái xe';
 const TEACHER_SHEET_NAME = 'Giáo viên';
 const TEACHER_HEADERS = ['Mã', 'Tên giáo viên', 'Thời điểm tạo', 'Thời điểm sửa'];
+const CAR_SHEET_NAME = 'Danh sách xe';
+const SLOT_SHEET_NAME = 'Khung giờ tập';
+const DEFAULT_CARS = ['Xe 1', 'Xe 2', 'Xe 3', 'Xe 4', 'Xe 5'];
+const DEFAULT_TIME_SLOTS = ['6h - 7h', '7h - 8h'];
 const ADMIN_PASSWORD = '12345678';
 const HEADERS = ['Mã', 'Ngày đăng ký', 'Tên thầy', 'Hạng xe', 'Xe', 'Khung giờ tập lái', 'Tên học viên', 'Thời điểm tạo', 'Thời điểm sửa'];
 const KEYS = ['id', 'registrationDate', 'teacher', 'licenseClass', 'car', 'timeSlots', 'student', 'createdAt', 'updatedAt'];
@@ -59,6 +63,111 @@ function getRecords_(sheet) {
     item.timeSlots = item.timeSlots ? item.timeSlots.split(' | ') : [];
     return item;
   });
+}
+function uniqueManagedNames_(values) {
+  const seen = new Set();
+  return values.map(clean_).filter(value => {
+    const key = value.toLocaleLowerCase('vi-VN');
+    if (!value || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function legacyManagedNames_(key) {
+  const records = getRecords_(getSheet_());
+  return key === 'timeSlots' ? records.flatMap(item => item.timeSlots) : records.map(item => item[key]);
+}
+function managedNames_(sheetName, header, defaults, legacyKey) {
+  const book = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = book.getSheetByName(sheetName);
+  if (!sheet) return uniqueManagedNames_(defaults.concat(legacyManagedNames_(legacyKey)));
+  if (sheet.getRange(1, 1).getDisplayValue() !== header) throw new Error('Trang tính cấu hình "' + sheetName + '" có tiêu đề cột không đúng.');
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, 1).getDisplayValues().map(row => clean_(row[0])).filter(Boolean);
+}
+function ensureManagedSheet_(sheetName, header, defaults, legacyKey) {
+  const book = SpreadsheetApp.openById(SPREADSHEET_ID);
+  let sheet = book.getSheetByName(sheetName);
+  if (sheet) {
+    if (sheet.getRange(1, 1).getDisplayValue() !== header) throw new Error('Trang tính cấu hình "' + sheetName + '" có tiêu đề cột không đúng.');
+    return sheet;
+  }
+  const names = uniqueManagedNames_(defaults.concat(legacyManagedNames_(legacyKey)));
+  sheet = book.insertSheet(sheetName);
+  sheet.getRange(1, 1).setValue(header).setBackground('#493bd8').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidth(1, 240);
+  if (names.length) sheet.getRange(2, 1, names.length, 1).setNumberFormat('@').setValues(names.map(name => [safeText_(name)]));
+  SpreadsheetApp.flush();
+  return sheet;
+}
+function getCars_() { return managedNames_(CAR_SHEET_NAME, 'Tên xe', DEFAULT_CARS, 'car'); }
+function getTimeSlots_() { return managedNames_(SLOT_SHEET_NAME, 'Khung giờ', DEFAULT_TIME_SLOTS, 'timeSlots'); }
+function getBookingOptions() { return {cars: getCars_(), slots: getTimeSlots_()}; }
+function validateManagedName_(value, label, existing) {
+  const name = clean_(value);
+  if (!name || name.length > 60 || name.includes('|') || /^[=+@-]/.test(name)) throw new Error('Tên ' + label + ' phải có 1–60 ký tự hợp lệ, không dùng dấu |.');
+  if (existing.some(item => item.toLocaleLowerCase('vi-VN') === name.toLocaleLowerCase('vi-VN'))) throw new Error(label.charAt(0).toLocaleUpperCase('vi-VN') + label.slice(1) + ' này đã có trong danh sách.');
+  return name;
+}
+function addCar(token, name) {
+  requireAdmin_(token);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    name = validateManagedName_(name, 'xe', getCars_());
+    const sheet = ensureManagedSheet_(CAR_SHEET_NAME, 'Tên xe', DEFAULT_CARS, 'car');
+    sheet.getRange(sheet.getLastRow() + 1, 1).setNumberFormat('@').setValue(safeText_(name));
+    SpreadsheetApp.flush();
+    return getCars_();
+  } finally { lock.releaseLock(); }
+}
+function deleteCar(token, name) {
+  requireAdmin_(token);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const cars = getCars_();
+    if (!cars.includes(name)) throw new Error('Không tìm thấy xe trong danh sách.');
+    if (getRecords_(getSheet_()).some(item => item.car === name)) throw new Error('Không thể xóa xe đã có lịch đăng ký.');
+    const sheet = ensureManagedSheet_(CAR_SHEET_NAME, 'Tên xe', DEFAULT_CARS, 'car');
+    const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+    const row = values.findIndex(item => item[0] === name) + 2;
+    if (row < 2) throw new Error('Không tìm thấy xe trong danh sách.');
+    sheet.deleteRow(row);
+    SpreadsheetApp.flush();
+    return getCars_();
+  } finally { lock.releaseLock(); }
+}
+function addTimeSlot(token, value) {
+  requireAdmin_(token);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    value = validateManagedName_(value, 'khung giờ', getTimeSlots_());
+    const sheet = ensureManagedSheet_(SLOT_SHEET_NAME, 'Khung giờ', DEFAULT_TIME_SLOTS, 'timeSlots');
+    sheet.getRange(sheet.getLastRow() + 1, 1).setNumberFormat('@').setValue(safeText_(value));
+    SpreadsheetApp.flush();
+    return getTimeSlots_();
+  } finally { lock.releaseLock(); }
+}
+function deleteTimeSlot(token, value) {
+  requireAdmin_(token);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const slots = getTimeSlots_();
+    if (!slots.includes(value)) throw new Error('Không tìm thấy khung giờ trong danh sách.');
+    if (getRecords_(getSheet_()).some(item => item.timeSlots.includes(value))) throw new Error('Không thể xóa khung giờ đã có lịch đăng ký.');
+    const sheet = ensureManagedSheet_(SLOT_SHEET_NAME, 'Khung giờ', DEFAULT_TIME_SLOTS, 'timeSlots');
+    const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+    const row = values.findIndex(item => item[0] === value) + 2;
+    if (row < 2) throw new Error('Không tìm thấy khung giờ trong danh sách.');
+    sheet.deleteRow(row);
+    SpreadsheetApp.flush();
+    return getTimeSlots_();
+  } finally { lock.releaseLock(); }
 }
 function findRowById_(sheet, id) {
   const last = sheet.getLastRow();
@@ -171,14 +280,14 @@ function deleteTeacher(token, id) {
     return true;
   } finally { lock.releaseLock(); }
 }
-// Chỉ công khai ngày, xe và khung giờ đã đặt. Không trả về tên hoặc mã đăng ký.
+// Chỉ công khai ngày, hạng xe, tên xe và khung giờ đã đặt; không trả về tên thầy, học viên hoặc mã đăng ký.
 function getAvailability(month) {
   if (typeof month !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('Tháng cần xem không hợp lệ.');
   const days = {};
   getRecords_(getSheet_()).forEach(item => {
     if (!item.registrationDate.startsWith(month)) return;
     if (!days[item.registrationDate]) days[item.registrationDate] = [];
-    item.timeSlots.forEach(slot => days[item.registrationDate].push({car: item.car, slot}));
+    item.timeSlots.forEach(slot => days[item.registrationDate].push({licenseClass: item.licenseClass, car: item.car, slot}));
   });
   return days;
 }
@@ -198,8 +307,9 @@ function validateRecord_(input) {
   if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) throw new Error('Ngày đăng ký không hợp lệ.');
   if (!item.teacher || !item.student || item.teacher.length > 120 || item.student.length > 120) throw new Error('Vui lòng nhập tên thầy và học viên (tối đa 120 ký tự).');
   if (!['B.01', 'B', 'C1'].includes(item.licenseClass)) throw new Error('Hạng xe không hợp lệ.');
-  if (!['Xe 1', 'Xe 2', 'Xe 3', 'Xe 4', 'Xe 5'].includes(item.car)) throw new Error('Xe không hợp lệ.');
-  if (!item.timeSlots.length || item.timeSlots.some(slot => !['6h - 7h', '7h - 8h'].includes(slot))) throw new Error('Vui lòng chọn ít nhất một khung giờ hợp lệ.');
+  if (!getCars_().includes(item.car)) throw new Error('Vui lòng chọn xe trong danh sách hiện có.');
+  const allowedSlots = getTimeSlots_();
+  if (!item.timeSlots.length || item.timeSlots.some(slot => !allowedSlots.includes(slot))) throw new Error('Vui lòng chọn ít nhất một khung giờ hợp lệ.');
   return item;
 }
 function checkConflict_(candidate, records, excludeId) {
@@ -217,12 +327,11 @@ function rowValues_(item) {
   });
 }
 function createRecord(input) {
-  const item = validateRecord_(input);
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    const item = validateRecord_(input);
     const sheet = getSheet_();
-    if (!getTeachers_().some(teacher => teacher.name === item.teacher)) throw new Error('Vui lòng chọn giáo viên trong danh sách hiện có.');
     checkConflict_(item, getRecords_(sheet), null);
     const now = new Date().toISOString();
     const saved = Object.assign({id: Utilities.getUuid()}, item, {createdAt: now, updatedAt: now});
@@ -234,7 +343,6 @@ function createRecord(input) {
 }
 function updateRecord(token, id, input) {
   requireAdmin_(token);
-  const item = validateRecord_(input);
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -242,7 +350,7 @@ function updateRecord(token, id, input) {
     const records = getRecords_(sheet);
     const index = records.findIndex(record => record.id === id);
     if (index < 0) throw new Error('Không tìm thấy lịch đăng ký.');
-    if (item.teacher !== records[index].teacher && !getTeachers_().some(teacher => teacher.name === item.teacher)) throw new Error('Vui lòng chọn giáo viên trong danh sách hiện có.');
+    const item = validateRecord_(input);
     checkConflict_(item, records, id);
     const saved = Object.assign({}, records[index], item, {updatedAt: new Date().toISOString()});
     sheet.getRange(findRowById_(sheet, id), 1, 1, HEADERS.length).setNumberFormat('@').setValues([rowValues_(saved)]);
@@ -285,6 +393,7 @@ function doPost(e) {
     if (!Array.isArray(args) || args.length > 3) throw new Error('Yêu cầu không hợp lệ.');
     const actions = {
       getAvailability: () => getAvailability(args[0]),
+      getBookingOptions: () => getBookingOptions(),
       listTeachers: () => listTeachers(),
       createRecord: () => createRecord(args[0]),
       loginAdmin: () => loginAdmin(args[0]),
@@ -295,7 +404,11 @@ function doPost(e) {
       exportWorkbook: () => exportWorkbook(args[0]),
       addTeacher: () => addTeacher(args[0], args[1]),
       updateTeacher: () => updateTeacher(args[0], args[1], args[2]),
-      deleteTeacher: () => deleteTeacher(args[0], args[1])
+      deleteTeacher: () => deleteTeacher(args[0], args[1]),
+      addCar: () => addCar(args[0], args[1]),
+      deleteCar: () => deleteCar(args[0], args[1]),
+      addTimeSlot: () => addTimeSlot(args[0], args[1]),
+      deleteTimeSlot: () => deleteTimeSlot(args[0], args[1])
     };
     if (!Object.prototype.hasOwnProperty.call(actions, request.action)) throw new Error('Chức năng không hợp lệ.');
     payload = {ok: true, result: actions[request.action]()};

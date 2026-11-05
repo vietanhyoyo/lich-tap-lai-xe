@@ -1,9 +1,10 @@
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz1yieMmCOnDdmFOGQ8rp-cjtwf-QMeTk0ff_jtfecBtF_EbK6_UdcCIxW6YGNQ1PTXLw/exec';
 const ACTIONS = new Set([
-  'getAvailability', 'listTeachers', 'createRecord',
+  'getAvailability', 'getBookingOptions', 'listTeachers', 'createRecord',
   'loginAdmin', 'listRecords', 'listTeachersAdmin',
   'updateRecord', 'deleteRecord', 'exportWorkbook',
-  'addTeacher', 'updateTeacher', 'deleteTeacher'
+  'addTeacher', 'updateTeacher', 'deleteTeacher',
+  'addCar', 'deleteCar', 'addTimeSlot', 'deleteTimeSlot'
 ]);
 const json = (statusCode, body) => ({
   statusCode,

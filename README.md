@@ -1,6 +1,6 @@
 # Lịch tập lái xe
 
-Ứng dụng đăng ký lịch tập lái xe lưu dữ liệu trong [Google Sheets](https://docs.google.com/spreadsheets/d/1SeeNpu1kZIt8nAqD_7lfzi_4z14t0Pm_96_tsfbsf2Q/edit). Trang đăng ký có lịch theo tháng, hiển thị xe và khung giờ đã đặt, cho phép chọn giáo viên. Trang quản trị có đăng nhập bằng mật khẩu, quản lý lịch và giáo viên, lọc, thống kê và xuất Excel. Google Apps Script kiểm tra trùng ngày, xe và khung giờ trước khi lưu.
+Ứng dụng đăng ký lịch tập lái xe lưu dữ liệu trong [Google Sheets](https://docs.google.com/spreadsheets/d/1SeeNpu1kZIt8nAqD_7lfzi_4z14t0Pm_96_tsfbsf2Q/edit). Trang đăng ký có lịch theo tháng, hiển thị xe và khung giờ đã đặt, cho phép nhập tên giáo viên trực tiếp. Trang quản trị có đăng nhập bằng mật khẩu, quản lý lịch, giáo viên, xe và khung giờ, lọc, thống kê và xuất Excel. Google Apps Script kiểm tra trùng ngày, xe và khung giờ trước khi lưu.
 
 ## Deploy trên Netlify
 

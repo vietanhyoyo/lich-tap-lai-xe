@@ -11,8 +11,9 @@
   let availability = {};
   let visibleMonth = '';
   let availabilityRequest = 0;
-  const cars = ['Xe 1', 'Xe 2', 'Xe 3', 'Xe 4', 'Xe 5'];
-  const slots = ['6h - 7h', '7h - 8h'];
+  let cars = [];
+  let slots = [];
+  const licenseClasses = ['B.01', 'B', 'C1'];
   const formatDate = value => value ? new Date(value + 'T00:00:00').toLocaleDateString('vi-VN') : '—';
   const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
   visibleMonth = today().slice(0, 7);
@@ -58,26 +59,56 @@
     form.querySelectorAll('[name="timeSlots"]').forEach(el => { el.checked = !!item?.timeSlots.includes(el.value); });
     message('');
   }
-  function renderTeacherOptions(selected = '') {
-    const select = $('#record-form').elements.teacher;
-    const names = teachers.map(item => typeof item === 'string' ? item : item.name);
-    const unavailable = selected && !names.includes(selected);
-    select.innerHTML = '<option value="">Chọn giáo viên</option>' +
-      names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('') +
-      (unavailable && page === 'admin' ? `<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (đã xóa khỏi danh sách)</option>` : '');
-    select.disabled = names.length === 0;
-    select.value = selected || '';
+  function renderBookingControls() {
+    const carSelect = $('#record-form').elements.car;
+    const selectedCar = carSelect.value;
+    carSelect.innerHTML = '<option value="">' + (cars.length ? 'Chọn xe' : 'Chưa có xe') + '</option>' + cars.map(car => `<option value="${escapeHtml(car)}">${escapeHtml(car)}</option>`).join('');
+    carSelect.disabled = cars.length === 0;
+    if (cars.includes(selectedCar)) carSelect.value = selectedCar;
+
+    const slotContainer = $('#time-slot-options');
+    const selectedSlots = new Set([...slotContainer.querySelectorAll('[name="timeSlots"]:checked')].map(input => input.value));
+    slotContainer.innerHTML = slots.length ? slots.map(slot => `<label class="choice"><input type="checkbox" name="timeSlots" value="${escapeHtml(slot)}"><span>${escapeHtml(slot)}</span><em class="choice-note"></em></label>`).join('') : '<span class="muted">Chưa có khung giờ. Vui lòng liên hệ quản trị viên.</span>';
+    slotContainer.querySelectorAll('[name="timeSlots"]').forEach(input => { input.checked = selectedSlots.has(input.value); });
+    if (page === 'register') renderCalendar();
+    updateSlotChoices();
+  }
+  async function loadBookingOptions() {
+    const options = await call('getBookingOptions');
+    cars = Array.isArray(options?.cars) ? options.cars : [];
+    slots = Array.isArray(options?.slots) ? options.slots : [];
+    renderBookingControls();
+    if (page === 'admin') {
+      renderManagedNames('cars-list', cars, 'car', 'Chưa có xe trong danh sách.');
+      renderManagedNames('slots-list', slots, 'slot', 'Chưa có khung giờ trong danh sách.');
+    }
+    const status = $('#booking-options-status');
+    if (status) status.textContent = cars.length && slots.length ? '' : 'Chưa cấu hình xe hoặc khung giờ. Vui lòng liên hệ quản trị viên.';
   }
   async function loadTeachers() {
-    teachers = await call(page === 'admin' ? 'listTeachersAdmin' : 'listTeachers', ...(page === 'admin' ? [adminToken] : []));
-    renderTeacherOptions($('#record-form').elements.teacher.value);
-    if (page === 'admin') renderTeachersAdmin();
-    else $('#teacher-status').textContent = teachers.length ? '' : 'Chưa có giáo viên. Vui lòng liên hệ quản trị viên.';
+    teachers = await call('listTeachersAdmin', adminToken);
+    renderTeachersAdmin();
   }
   function renderTeachersAdmin() {
     $('#teachers-list').innerHTML = teachers.length ? teachers.map(item =>
       `<div class="teacher-row"><strong>${escapeHtml(item.name)}</strong><div class="row-actions"><button type="button" class="action-edit" data-teacher-edit="${escapeHtml(item.id)}">Sửa</button><button type="button" class="action-delete" data-teacher-delete="${escapeHtml(item.id)}">Xóa</button></div></div>`
-    ).join('') : '<p class="muted">Chưa có giáo viên. Bấm “Thêm giáo viên” để bắt đầu.</p>';
+    ).join('') : '<p class="muted">Chưa có tên giáo viên. Bấm “Thêm giáo viên” để quản lý danh sách.</p>';
+  }
+  function renderManagedNames(listId, names, type, emptyText) {
+    const attribute = type === 'car' ? 'data-car-delete' : 'data-slot-delete';
+    $('#' + listId).innerHTML = names.length ? names.map(name =>
+      `<div class="managed-item"><strong>${escapeHtml(name)}</strong><div class="row-actions"><button type="button" class="action-delete" ${attribute}="${escapeHtml(name)}">Xóa</button></div></div>`
+    ).join('') : `<p class="muted">${emptyText}</p>`;
+  }
+  function showAdminView(view) {
+    document.querySelectorAll('[data-admin-view]').forEach(button => {
+      const active = button.dataset.adminView === view;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    document.querySelectorAll('[data-admin-view-panel]').forEach(panel => { panel.hidden = panel.dataset.adminViewPanel !== view; });
+    $('#add-record').hidden = view !== 'records';
+    $('#export-excel').hidden = view !== 'records';
   }
   function bookedSlots(date) {
     return new Set((availability[date] || []).map(item => item.car + '|' + item.slot));
@@ -106,8 +137,9 @@
     for (let day = 1; day <= daysInMonth; day++) {
       const date = visibleMonth + '-' + String(day).padStart(2, '0');
       const count = bookedSlots(date).size;
-      const status = count === 10 ? 'full' : count > 0 ? 'booked' : 'available';
-      cells.push(`<button type="button" class="calendar-day ${status}${selectedDate === date ? ' selected' : ''}${today() === date ? ' today' : ''}" data-day="${date}" aria-label="Ngày ${day} tháng ${month}: ${count} trên 10 khung giờ đã đặt" aria-pressed="${selectedDate === date}"><strong>${day}</strong><span>${count ? count + '/10' : 'Trống'}</span></button>`);
+      const capacity = cars.length * slots.length;
+      const status = capacity > 0 && count >= capacity ? 'full' : count > 0 ? 'booked' : 'available';
+      cells.push(`<button type="button" class="calendar-day ${status}${selectedDate === date ? ' selected' : ''}${today() === date ? ' today' : ''}" data-day="${date}" aria-label="Ngày ${day} tháng ${month}: ${count} trên ${capacity} khung giờ đã đặt" aria-pressed="${selectedDate === date}"><strong>${day}</strong><span>${capacity ? count + '/' + capacity : 'Chưa cấu hình'}</span></button>`);
     }
     $('#calendar-grid').innerHTML = cells.join('');
     renderDayDetails();
@@ -117,13 +149,30 @@
     if (!date || !date.startsWith(visibleMonth)) {
       $('#selected-date-title').textContent = 'Tình trạng ngày đã chọn';
       $('#selected-date-summary').textContent = 'Chọn ngày trong tháng đang xem để xem chi tiết.';
+      $('#license-class-availability').innerHTML = '';
       $('#day-availability').innerHTML = '';
       return;
     }
     const booked = bookedSlots(date);
+    const slotBookings = new Map((availability[date] || []).map(item => [item.car + '|' + item.slot, item]));
+    const capacity = cars.length * slots.length;
+    const classCounts = new Map(licenseClasses.map(name => [name, {cars: new Set(), slots: 0}]));
+    (availability[date] || []).forEach(item => {
+      const count = classCounts.get(item.licenseClass);
+      if (!count) return;
+      count.cars.add(item.car);
+      count.slots++;
+    });
     $('#selected-date-title').textContent = 'Ngày ' + formatDate(date);
-    $('#selected-date-summary').textContent = booked.size + '/10 lượt xe và khung giờ đã được đăng ký.';
-    $('#day-availability').innerHTML = cars.map(car => `<div class="availability-car"><strong>${car}</strong><div>${slots.map(slot => booked.has(car + '|' + slot) ? `<span class="availability-slot taken">${slot} · Đã đặt</span>` : `<button type="button" class="availability-slot free" data-pick-car="${car}" data-pick-slot="${slot}" aria-label="Chọn ${car}, ${slot}, ngày ${formatDate(date)}">${slot} · Còn trống</button>`).join('')}</div></div>`).join('');
+    $('#selected-date-summary').textContent = capacity ? booked.size + '/' + capacity + ' lượt xe và khung giờ đã được đăng ký.' : 'Chưa cấu hình xe hoặc khung giờ.';
+    $('#license-class-availability').innerHTML = licenseClasses.map(name => {
+      const count = classCounts.get(name);
+      return `<div class="license-class-count"><strong>${escapeHtml(name)}</strong><span>${count.cars.size} xe · ${count.slots} khung giờ đã đặt</span></div>`;
+    }).join('');
+    $('#day-availability').innerHTML = cars.map(car => `<div class="availability-car"><strong>${escapeHtml(car)}</strong><div>${slots.map(slot => {
+      const booking = slotBookings.get(car + '|' + slot);
+      return booking ? `<span class="availability-slot taken">${escapeHtml(slot)} · Đã đặt${booking.licenseClass ? ' · ' + escapeHtml(booking.licenseClass) : ''}</span>` : `<button type="button" class="availability-slot free" data-pick-car="${escapeHtml(car)}" data-pick-slot="${escapeHtml(slot)}" aria-label="Chọn ${escapeHtml(car)}, ${escapeHtml(slot)}, ngày ${formatDate(date)}">${escapeHtml(slot)} · Còn trống</button>`;
+    }).join('')}</div></div>`).join('');
     updateSlotChoices();
   }
   async function loadAvailability(month = visibleMonth) {
@@ -163,7 +212,8 @@
       if (!choice) return;
       form.elements.car.value = choice.dataset.pickCar;
       updateSlotChoices();
-      form.querySelector('[name="timeSlots"][value="' + choice.dataset.pickSlot + '"]').checked = true;
+      const selectedSlot = [...form.querySelectorAll('[name="timeSlots"]')].find(input => input.value === choice.dataset.pickSlot);
+      if (selectedSlot) selectedSlot.checked = true;
       $('#selected-date-summary').textContent = 'Đã chọn ' + choice.dataset.pickCar + ', ' + choice.dataset.pickSlot + '. Hoàn tất biểu mẫu bên dưới.';
     });
     form.elements.registrationDate.addEventListener('change', () => {
@@ -185,6 +235,38 @@
   async function loadRecords() {
     records = await call('listRecords', adminToken);
     renderAdmin();
+  }
+  async function loadAdminDashboard() {
+    await withBusy(async () => {
+      const results = await Promise.allSettled([loadBookingOptions(), loadTeachers(), loadRecords()]);
+      const [optionsResult, teachersResult, recordsResult] = results;
+      if (optionsResult.status === 'rejected') {
+        const text = 'Không tải được xe và khung giờ: ' + optionsResult.reason.message;
+        for (const id of ['cars-message', 'slots-message']) {
+          const status = $('#' + id);
+          status.textContent = text;
+          status.classList.add('error');
+        }
+      } else {
+        for (const id of ['cars-message', 'slots-message']) {
+          $('#' + id).textContent = '';
+          $('#' + id).classList.remove('error');
+        }
+      }
+      if (teachersResult.status === 'rejected') {
+        $('#teachers-message').textContent = 'Không tải được danh sách giáo viên: ' + teachersResult.reason.message;
+        $('#teachers-message').classList.add('error');
+      } else {
+        $('#teachers-message').textContent = '';
+        $('#teachers-message').classList.remove('error');
+      }
+      if (recordsResult.status === 'rejected') {
+        $('#result-count').textContent = 'Không tải được lịch tập: ' + recordsResult.reason.message;
+      }
+
+      const expired = results.find(result => result.status === 'rejected' && /Phiên quản trị/.test(result.reason.message));
+      if (expired) showLogin(expired.reason.message);
+    }, 'Đang tải dữ liệu quản trị...');
   }
   function renderAdmin() {
     const search = $('#filter-name').value.trim().toLocaleLowerCase('vi-VN');
@@ -210,10 +292,7 @@
     fillForm(form, null);
     if (page === 'register') {
       initAvailability(form);
-      loadTeachers().catch(error => { $('#teacher-status').textContent = 'Không tải được danh sách giáo viên: ' + error.message; });
-      document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) loadTeachers().catch(error => { $('#teacher-status').textContent = 'Không tải được danh sách giáo viên: ' + error.message; });
-      });
+      loadBookingOptions().catch(error => { const status = $('#booking-options-status'); if (status) status.textContent = 'Không tải được xe và khung giờ: ' + error.message; });
     }
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -233,7 +312,6 @@
             fillForm(form, null);
             visibleMonth = today().slice(0, 7);
             await loadAvailability();
-            await loadTeachers();
             message('Đăng ký thành công! Lịch đã được lưu vào Google Sheets.');
             window.scrollTo({top:0, behavior:'smooth'});
           }
@@ -248,6 +326,8 @@
       finally { button.disabled = false; }
     });
     if (page !== 'admin') return;
+    showAdminView('records');
+    document.querySelectorAll('[data-admin-view]').forEach(button => button.addEventListener('click', () => showAdminView(button.dataset.adminView)));
     $('#login-form').addEventListener('submit', async event => {
       event.preventDefault();
       $('#login-error').textContent = '';
@@ -256,22 +336,21 @@
       try {
         await withBusy(async () => {
           adminToken = await call('loginAdmin', $('#admin-password').value);
-          await loadTeachers();
-          await loadRecords();
           $('#admin-password').value = '';
           $('#admin-login').hidden = true;
         }, 'Đang đăng nhập...');
+        await loadAdminDashboard();
       } catch (error) { showLogin(error.message); }
       finally { button.disabled = false; }
     });
     if (adminToken) {
-      try { await withBusy(async () => { await loadTeachers(); await loadRecords(); }, 'Đang tải lịch tập...'); $('#admin-login').hidden = true; }
+      try { await loadAdminDashboard(); $('#admin-login').hidden = true; }
       catch (error) { showLogin(error.message); }
     }
     for (const selector of ['#filter-name','#filter-class','#filter-date']) $(selector).addEventListener('input', renderAdmin);
     $('#clear-filters').addEventListener('click', () => { $('#filter-name').value = ''; $('#filter-class').value = ''; $('#filter-date').value = ''; renderAdmin(); });
     const dialog = $('#record-dialog');
-    $('#add-record').addEventListener('click', () => { editingId = null; $('#dialog-title').textContent = 'Thêm lịch tập'; fillForm(form, null); renderTeacherOptions(); dialog.showModal(); });
+    $('#add-record').addEventListener('click', () => { editingId = null; $('#dialog-title').textContent = 'Thêm lịch tập'; fillForm(form, null); dialog.showModal(); });
     $('#close-dialog').addEventListener('click', () => dialog.close());
     $('#cancel-dialog').addEventListener('click', () => dialog.close());
     $('#records-body').addEventListener('click', async event => {
@@ -283,7 +362,6 @@
         editingId = item.id;
         $('#dialog-title').textContent = 'Sửa lịch tập';
         fillForm(form, item);
-        renderTeacherOptions(item.teacher);
         dialog.showModal();
       }
       if (del) {
@@ -333,17 +411,93 @@
       }
       if (del) {
         const item = teachers.find(teacher => teacher.id === del.dataset.teacherDelete);
-        if (!item || !window.confirm('Xóa giáo viên ' + item.name + ' khỏi danh sách chọn? Lịch đã đăng ký vẫn được giữ.')) return;
+        if (!item || !window.confirm('Xóa giáo viên ' + item.name + ' khỏi danh sách quản lý? Lịch đã đăng ký vẫn được giữ.')) return;
         try {
           await withBusy(async () => {
             await call('deleteTeacher', adminToken, item.id);
             await loadTeachers();
-            $('#teachers-message').textContent = 'Đã xóa giáo viên khỏi danh sách chọn.';
+            $('#teachers-message').textContent = 'Đã xóa giáo viên khỏi danh sách quản lý.';
           }, 'Đang xóa giáo viên...');
         } catch (error) {
           $('#teachers-message').textContent = error.message;
           if (/Phiên quản trị/.test(error.message)) showLogin(error.message);
         }
+      }
+    });
+    const carDialog = $('#car-dialog');
+    $('#add-car').addEventListener('click', () => { $('#car-name').value = ''; $('#car-dialog-error').textContent = ''; carDialog.showModal(); });
+    $('#close-car-dialog').addEventListener('click', () => carDialog.close());
+    $('#cancel-car-dialog').addEventListener('click', () => carDialog.close());
+    $('#car-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = event.submitter;
+      button.disabled = true;
+      $('#car-dialog-error').textContent = '';
+      try {
+        await withBusy(async () => {
+          await call('addCar', adminToken, $('#car-name').value);
+          await loadBookingOptions();
+          carDialog.close();
+          $('#cars-message').classList.remove('error');
+          $('#cars-message').textContent = 'Đã thêm xe vào danh sách.';
+        }, 'Đang lưu xe...');
+      } catch (error) {
+        $('#car-dialog-error').textContent = error.message;
+        if (/Phiên quản trị/.test(error.message)) { carDialog.close(); showLogin(error.message); }
+      } finally { button.disabled = false; }
+    });
+    $('#cars-list').addEventListener('click', async event => {
+      const button = event.target.closest('[data-car-delete]');
+      if (!button || !window.confirm('Xóa ' + button.dataset.carDelete + ' khỏi danh sách xe? Chỉ xe chưa có lịch mới xóa được.')) return;
+      try {
+        await withBusy(async () => {
+          await call('deleteCar', adminToken, button.dataset.carDelete);
+          await loadBookingOptions();
+          $('#cars-message').classList.remove('error');
+          $('#cars-message').textContent = 'Đã xóa xe khỏi danh sách.';
+        }, 'Đang xóa xe...');
+      } catch (error) {
+        $('#cars-message').textContent = error.message;
+        $('#cars-message').classList.add('error');
+        if (/Phiên quản trị/.test(error.message)) showLogin(error.message);
+      }
+    });
+    const slotDialog = $('#slot-dialog');
+    $('#add-time-slot').addEventListener('click', () => { $('#slot-name').value = ''; $('#slot-dialog-error').textContent = ''; slotDialog.showModal(); });
+    $('#close-slot-dialog').addEventListener('click', () => slotDialog.close());
+    $('#cancel-slot-dialog').addEventListener('click', () => slotDialog.close());
+    $('#slot-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = event.submitter;
+      button.disabled = true;
+      $('#slot-dialog-error').textContent = '';
+      try {
+        await withBusy(async () => {
+          await call('addTimeSlot', adminToken, $('#slot-name').value);
+          await loadBookingOptions();
+          slotDialog.close();
+          $('#slots-message').classList.remove('error');
+          $('#slots-message').textContent = 'Đã thêm khung giờ vào danh sách.';
+        }, 'Đang lưu khung giờ...');
+      } catch (error) {
+        $('#slot-dialog-error').textContent = error.message;
+        if (/Phiên quản trị/.test(error.message)) { slotDialog.close(); showLogin(error.message); }
+      } finally { button.disabled = false; }
+    });
+    $('#slots-list').addEventListener('click', async event => {
+      const button = event.target.closest('[data-slot-delete]');
+      if (!button || !window.confirm('Xóa khung giờ ' + button.dataset.slotDelete + '? Chỉ khung giờ chưa có lịch mới xóa được.')) return;
+      try {
+        await withBusy(async () => {
+          await call('deleteTimeSlot', adminToken, button.dataset.slotDelete);
+          await loadBookingOptions();
+          $('#slots-message').classList.remove('error');
+          $('#slots-message').textContent = 'Đã xóa khung giờ khỏi danh sách.';
+        }, 'Đang xóa khung giờ...');
+      } catch (error) {
+        $('#slots-message').textContent = error.message;
+        $('#slots-message').classList.add('error');
+        if (/Phiên quản trị/.test(error.message)) showLogin(error.message);
       }
     });
     $('#export-excel').addEventListener('click', async () => {
